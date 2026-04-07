@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "selfllmwiki"
+version = "0.1.0"
+description = "自托管 LLM Wiki 知识库系统"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.34",
+    "pydantic-settings>=2.0",
+    "python-multipart",
+    "aiofiles",
+    "httpx",
+    "openai>=1.0",
+    "anthropic>=0.40",
+    "trafilatura>=2.0",
+    "markdownify>=0.14",
+    "duckduckgo-search>=7.0",
+    "semanticscholar>=0.8",
+    "pyyaml",
+    "watchfiles",
+    "websockets",
+]
+
+[project.optional-dependencies]
+pdf = [
+    "marker-pdf>=1.0",
+    "pymupdf4llm>=0.0.10",
+]

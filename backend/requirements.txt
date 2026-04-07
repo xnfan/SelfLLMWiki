@@ -1,0 +1,30 @@
+# 核心框架
+fastapi>=0.115
+uvicorn[standard]>=0.34
+pydantic-settings>=2.0
+python-multipart
+aiofiles
+httpx
+websockets
+
+# LLM 提供商
+openai>=1.0
+anthropic>=0.40
+
+# PDF → Markdown（可选，需要额外安装）
+# marker-pdf>=1.0
+# pymupdf4llm>=0.0.10
+
+# HTML → Markdown
+trafilatura>=2.0
+markdownify>=0.14
+
+# 网络搜索
+duckduckgo-search>=7.0
+
+# 学术论文搜索
+semanticscholar>=0.8
+
+# 工具
+pyyaml
+watchfiles

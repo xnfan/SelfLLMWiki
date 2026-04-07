@@ -1,0 +1,62 @@
+# SelfLLMWiki 配置文件
+
+# LLM 提供商配置（支持自定义接入）
+llm:
+  providers:
+    - name: "local-ollama"
+      format: "openai"                           # OpenAI 兼容格式
+      base_url: "http://localhost:11434/v1"
+      api_key: "ollama"
+      model: "qwen3:14b"
+      max_tokens: 8192
+      temperature: 0.3
+    # - name: "openrouter"
+    #   format: "openai"
+    #   base_url: "https://openrouter.ai/api/v1"
+    #   api_key: "sk-or-xxx"
+    #   model: "google/gemini-2.5-pro"
+    #   max_tokens: 8192
+    #   temperature: 0.3
+    # - name: "claude"
+    #   format: "anthropic"
+    #   api_key: "sk-ant-xxx"
+    #   model: "claude-sonnet-4-6"
+    #   max_tokens: 8192
+    #   temperature: 0.3
+    # - name: "deepseek"
+    #   format: "openai"
+    #   base_url: "https://api.deepseek.com/v1"
+    #   api_key: "sk-xxx"
+    #   model: "deepseek-chat"
+    #   max_tokens: 8192
+    #   temperature: 0.3
+  default: "local-ollama"
+
+# Wiki 数据路径
+data:
+  root: "./data"
+  raw_dir: "raw"
+  wiki_dir: "wiki"
+  assets_dir: "assets"
+
+# PDF 处理
+pdf:
+  converter: "marker"         # "marker" | "pymupdf4llm"
+  use_gpu: true
+  use_llm: false
+
+# 语言支持
+language:
+  ocr_languages: ["en", "zh"]
+  wiki_language: "zh"
+
+# 网络搜索
+search:
+  engine: "duckduckgo"        # "duckduckgo" | "searxng"
+  searxng_url: ""
+
+# 服务器
+server:
+  host: "127.0.0.1"
+  port: 8000
+  reload: true
