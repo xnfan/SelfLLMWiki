@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from fastapi import APIRouter
 
 from ..models.schemas import (
@@ -63,36 +65,73 @@ async def api_expand_papers(body: PaperExpandRequest) -> PaperSearchResponse:
         return PaperSearchResponse(papers=[], total=0)
 
 
+async def _download_single_paper(
+    paper, pipeline: PaperPipeline, assets_path
+) -> tuple[str, bool, str]:
+    """下载并处理单篇论文
+
+    Returns
+    -------
+    tuple[str, bool, str]
+        (标题, 是否成功, 错误信息)
+    """
+    filename = f"{paper.paper_id or paper.title[:30]}.pdf"
+    save_path = assets_path / filename
+
+    try:
+        success = False
+
+        # 优先使用 open_access_url
+        if paper.open_access_url:
+            success = await download_paper_pdf(paper.open_access_url, save_path)
+
+        # 如果是 arXiv 论文且上面失败，尝试直接下载
+        if not success and paper.paper_id and paper.paper_id.startswith("arxiv:"):
+            success = await download_arxiv_pdf(paper.paper_id, save_path)
+
+        if success:
+            result = await pipeline.process_paper(save_path, title=paper.title)
+            if result.success:
+                return (paper.title, True, "")
+            else:
+                return (paper.title, False, result.message)
+        else:
+            return (paper.title, False, "下载失败")
+    except Exception as e:
+        return (paper.title, False, str(e))
+
+
 @router.post("/download", summary="下载并摄入论文")
 async def api_download_papers(body: PaperDownloadRequest) -> PaperDownloadResponse:
-    """批量下载论文 PDF 并通过管线处理"""
+    """批量下载论文 PDF 并通过管线处理（并发执行，最多3个并发）"""
     cfg = get_config().data
     pipeline = PaperPipeline()
-    downloaded = []
-    failed = []
+    downloaded: list[str] = []
+    failed: list[str] = []
 
-    for paper in body.papers:
-        filename = f"{paper.paper_id or paper.title[:30]}.pdf"
-        save_path = cfg.assets_path / filename
+    # 使用信号量限制并发数
+    semaphore = asyncio.Semaphore(3)
 
-        try:
-            success = False
+    async def download_with_limit(paper):
+        async with semaphore:
+            return await _download_single_paper(paper, pipeline, cfg.assets_path)
 
-            # 优先使用 open_access_url
-            if paper.open_access_url:
-                success = await download_paper_pdf(paper.open_access_url, save_path)
+    # 并发执行所有下载任务
+    results = await asyncio.gather(
+        *[download_with_limit(paper) for paper in body.papers],
+        return_exceptions=True
+    )
 
-            # 如果是 arXiv 论文且上面失败，尝试直接下载
-            if not success and paper.paper_id and paper.paper_id.startswith("arxiv:"):
-                success = await download_arxiv_pdf(paper.paper_id, save_path)
-
-            if success:
-                await pipeline.process_paper(save_path, title=paper.title)
-                downloaded.append(paper.title)
-            else:
-                failed.append(f"{paper.title}: 下载失败")
-        except Exception as e:
-            failed.append(f"{paper.title}: {e}")
+    # 处理结果
+    for result in results:
+        if isinstance(result, Exception):
+            failed.append(f"未知错误: {result}")
+            continue
+        title, success, error_msg = result
+        if success:
+            downloaded.append(title)
+        else:
+            failed.append(f"{title}: {error_msg}")
 
     return PaperDownloadResponse(
         downloaded=downloaded,

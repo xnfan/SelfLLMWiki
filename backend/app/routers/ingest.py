@@ -15,19 +15,16 @@ router = APIRouter(prefix="/api/ingest", tags=["ingest"])
 async def ingest_text(body: IngestRequest) -> IngestResponse:
     """摄入文本内容或 URL，提取知识并写入 Wiki"""
     svc = IngestService()
-    try:
-        if body.url:
-            return await svc.ingest_url(body.url)
-        elif body.content:
-            return await svc.ingest_text(
-                content=body.content,
-                source_type=body.source_type.value,
-                title=body.title,
-            )
-        else:
-            raise HTTPException(status_code=400, detail="请提供 content 或 url")
-    except Exception as e:
-        return IngestResponse(success=False, message=f"摄入失败: {e}")
+    if body.url:
+        return await svc.ingest_url(body.url)
+    elif body.content:
+        return await svc.ingest_text(
+            content=body.content,
+            source_type=body.source_type.value,
+            title=body.title,
+        )
+    else:
+        raise HTTPException(status_code=400, detail="请提供 content 或 url")
 
 
 @router.post("/paper", summary="摄入论文 PDF")
@@ -37,8 +34,5 @@ async def ingest_paper(file: UploadFile = File(...)) -> IngestResponse:
         raise HTTPException(status_code=400, detail="请上传文件")
 
     pipeline = PaperPipeline()
-    try:
-        data = await file.read()
-        return await pipeline.process_paper_from_bytes(data, file.filename)
-    except Exception as e:
-        return IngestResponse(success=False, message=f"论文处理失败: {e}")
+    data = await file.read()
+    return await pipeline.process_paper_from_bytes(data, file.filename)

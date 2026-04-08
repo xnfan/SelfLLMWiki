@@ -130,13 +130,12 @@ class PaperPipeline:
         IngestResponse
             处理结果
         """
-        # 先保存到临时文件，然后调用 process_paper
-        suffix = Path(filename).suffix or ".pdf"
-        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
-            tmp.write(data)
-            tmp_path = Path(tmp.name)
+        # 使用 TemporaryDirectory 确保临时文件被清理
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            suffix = Path(filename).suffix or ".pdf"
+            tmp_path = Path(tmp_dir) / f"temp{suffix}"
+            tmp_path.write_bytes(data)
 
-        try:
             # 同时将 PDF 保存到 assets 目录
             cfg = get_config()
             assets_dir = cfg.data.assets_path / "papers"
@@ -146,9 +145,3 @@ class PaperPipeline:
 
             result = await self.process_paper(tmp_path, title=Path(filename).stem)
             return result
-        finally:
-            # 清理临时文件
-            try:
-                tmp_path.unlink()
-            except OSError:
-                pass

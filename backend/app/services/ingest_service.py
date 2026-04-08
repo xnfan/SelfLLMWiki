@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 from datetime import datetime
@@ -11,6 +10,7 @@ from pathlib import Path
 from ..config import get_config
 from ..models.schemas import IngestResponse
 from .html_converter import convert_url_to_markdown
+from .json_utils import extract_json
 from .llm import get_llm
 from .wiki_manager import WikiManager
 
@@ -31,29 +31,11 @@ def load_prompt(name: str) -> str:
     return path.read_text(encoding="utf-8")
 
 
-# ── 解析 LLM 返回内容的正则 ──
-
-# 匹配 JSON 块（可能被 ```json ... ``` 包裹）
-_JSON_RE = re.compile(r"```json\s*\n(.*?)\n\s*```", re.DOTALL)
 # 匹配页面内容块
 _PAGE_RE = re.compile(
     r"---PAGE:\s*(\S+)\s*---\s*\n(.*?)\n\s*---END PAGE---",
     re.DOTALL,
 )
-
-
-def _extract_json(text: str) -> dict:
-    """从 LLM 输出中提取 JSON 对象"""
-    # 先尝试匹配 ```json ... ```
-    m = _JSON_RE.search(text)
-    if m:
-        return json.loads(m.group(1))
-    # 尝试直接解析（找第一个 { 到最后一个 }）
-    start = text.find("{")
-    end = text.rfind("}")
-    if start != -1 and end != -1:
-        return json.loads(text[start : end + 1])
-    return {}
 
 
 def _extract_pages(text: str) -> dict[str, str]:
@@ -125,7 +107,7 @@ class IngestService:
             )
 
             # 4. 解析 LLM 返回的 JSON 和页面内容
-            result_json = _extract_json(llm_response)
+            result_json = extract_json(llm_response)
             page_contents = _extract_pages(llm_response)
 
             pages_created: list[str] = []

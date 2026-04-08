@@ -2,38 +2,17 @@
 
 from __future__ import annotations
 
-import json
 import logging
-import re
 from datetime import datetime
 
 from ..config import get_config
 from ..models.schemas import LintIssue, LintReport
 from .ingest_service import load_prompt
+from .json_utils import extract_json_array
 from .llm import get_llm
 from .wiki_manager import WikiManager
 
 logger = logging.getLogger(__name__)
-
-# 匹配 JSON 数组（可能被 ```json ... ``` 包裹）
-_JSON_ARRAY_RE = re.compile(r"```json\s*\n(\[.*?\])\s*\n```", re.DOTALL)
-
-
-def _extract_json_array(text: str) -> list[dict]:
-    """从 LLM 输出中提取 JSON 数组"""
-    # 先尝试匹配 ```json ... ```
-    m = _JSON_ARRAY_RE.search(text)
-    if m:
-        return json.loads(m.group(1))
-    # 尝试直接解析（找第一个 [ 到最后一个 ]）
-    start = text.find("[")
-    end = text.rfind("]")
-    if start != -1 and end != -1:
-        try:
-            return json.loads(text[start : end + 1])
-        except json.JSONDecodeError:
-            pass
-    return []
 
 
 class LintService:

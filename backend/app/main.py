@@ -74,6 +74,34 @@ async def root():
     }
 
 
+@app.get("/health", summary="健康检查")
+async def health_check():
+    """健康检查端点，用于容器化部署监控"""
+    try:
+        cfg = get_config()
+        # 检查关键目录是否可访问
+        checks = {
+            "wiki_dir": cfg.data.wiki_path.exists(),
+            "pages_dir": cfg.data.pages_path.exists(),
+            "raw_dir": cfg.data.raw_path.exists(),
+            "assets_dir": cfg.data.assets_path.exists(),
+        }
+
+        all_healthy = all(checks.values())
+
+        return {
+            "status": "healthy" if all_healthy else "degraded",
+            "checks": checks,
+            "version": "0.1.0",
+        }
+    except Exception as e:
+        return {
+            "status": "unhealthy",
+            "error": str(e),
+            "version": "0.1.0",
+        }
+
+
 @app.websocket("/ws/progress")
 async def websocket_progress(websocket: WebSocket):
     """WebSocket 端点：推送任务进度通知"""

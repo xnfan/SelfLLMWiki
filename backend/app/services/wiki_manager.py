@@ -13,6 +13,20 @@ from ..models.schemas import WikiPage, WikiPageSummary
 # [[wikilink]] 正则：匹配 [[slug]] 或 [[slug|显示文本]]
 WIKILINK_RE = re.compile(r"\[\[([^\]|]+)(?:\|[^\]]+)?\]\]")
 
+# Slug 验证正则：允许字母、数字、下划线、中文字符和连字符
+SLUG_RE = re.compile(r'^[\w\u4e00-\u9fff-]+$')
+
+
+def validate_slug(slug: str) -> bool:
+    """验证 slug 是否合法，防止路径遍历攻击"""
+    if not slug or not isinstance(slug, str):
+        return False
+    # 检查是否包含路径遍历字符
+    if ".." in slug or "/" in slug or "\\" in slug:
+        return False
+    # 检查是否符合允许的字符集
+    return bool(SLUG_RE.match(slug))
+
 
 class WikiManager:
     """管理 wiki/ 目录下的所有 Markdown 页面"""
@@ -31,6 +45,8 @@ class WikiManager:
 
     def read_page(self, slug: str) -> WikiPage | None:
         """读取指定 slug 的页面"""
+        if not validate_slug(slug):
+            return None
         path = self.pages_path / f"{slug}.md"
         if not path.exists():
             return None
@@ -52,6 +68,8 @@ class WikiManager:
 
     def write_page(self, slug: str, content: str, title: str = "") -> None:
         """写入页面（创建或覆盖）"""
+        if not validate_slug(slug):
+            raise ValueError(f"非法的 slug: {slug}")
         path = self.pages_path / f"{slug}.md"
         if title and not content.startswith(f"# {title}"):
             content = f"# {title}\n\n{content}"
@@ -59,6 +77,8 @@ class WikiManager:
 
     def delete_page(self, slug: str) -> bool:
         """删除页面"""
+        if not validate_slug(slug):
+            return False
         path = self.pages_path / f"{slug}.md"
         if path.exists():
             path.unlink()
@@ -81,6 +101,8 @@ class WikiManager:
 
     def page_exists(self, slug: str) -> bool:
         """检查页面是否存在"""
+        if not validate_slug(slug):
+            return False
         return (self.pages_path / f"{slug}.md").exists()
 
     # ── 链接管理 ──
@@ -152,9 +174,20 @@ class WikiManager:
 
     def append_log(self, operation: str, details: str, affected_pages: list[str] | None = None) -> None:
         """向 log.md 追加一条记录"""
+        def _escape(s: str) -> str:
+            """转义 Markdown 表格中的特殊字符，防止注入"""
+            # 替换换行符和表格分隔符
+            s = s.replace("\n", " ").replace("\r", " ")
+            s = s.replace("|", "\\|")
+            return s.strip()
+
         pages_str = ", ".join(affected_pages) if affected_pages else "-"
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        entry = f"| {timestamp} | {operation} | {details} | {pages_str} |\n"
+        # 对输入进行转义，防止日志注入
+        safe_operation = _escape(operation)
+        safe_details = _escape(details)
+        safe_pages = _escape(pages_str)
+        entry = f"| {timestamp} | {safe_operation} | {safe_details} | {safe_pages} |\n"
         with open(self.log_path, "a", encoding="utf-8") as f:
             f.write(entry)
 
