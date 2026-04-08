@@ -205,8 +205,8 @@ def _ss_paper_to_info(paper: Any) -> PaperInfo:
     )
 
 
-async def _search_semantic_scholar(query: str, limit: int = 20) -> list[PaperInfo]:
-    """搜索 Semantic Scholar"""
+def _search_semantic_scholar_sync(query: str, limit: int) -> list[PaperInfo]:
+    """同步搜索 Semantic Scholar（在线程池中运行）"""
     if not _HAS_SS:
         return []
 
@@ -216,6 +216,31 @@ async def _search_semantic_scholar(query: str, limit: int = 20) -> list[PaperInf
         papers = [_ss_paper_to_info(p) for p in (results or [])]
         logger.info(f"Semantic Scholar 搜索 '{query}' 返回 {len(papers)} 篇")
         return papers
+    except Exception as e:
+        logger.warning(f"Semantic Scholar 搜索失败: {e}")
+        return []
+
+
+async def _search_semantic_scholar(query: str, limit: int = 20) -> list[PaperInfo]:
+    """搜索 Semantic Scholar（带超时）"""
+    if not _HAS_SS:
+        return []
+
+    # 在线程池中运行同步调用，避免阻塞事件循环
+    import concurrent.futures
+    loop = asyncio.get_event_loop()
+
+    try:
+        # 设置 10 秒超时
+        with concurrent.futures.ThreadPoolExecutor() as pool:
+            result = await asyncio.wait_for(
+                loop.run_in_executor(pool, _search_semantic_scholar_sync, query, limit),
+                timeout=10.0
+            )
+            return result
+    except asyncio.TimeoutError:
+        logger.warning(f"Semantic Scholar 搜索超时 (10s)，回退到 arXiv")
+        return []
     except Exception as e:
         logger.warning(f"Semantic Scholar 搜索失败: {e}")
         return []
