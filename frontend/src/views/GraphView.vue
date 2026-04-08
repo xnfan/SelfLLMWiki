@@ -20,6 +20,8 @@ const categoryColors: Record<string, string> = {
 }
 
 let simulation: d3.Simulation<any, any> | null = null
+let zoomBehavior: d3.ZoomBehavior<SVGSVGElement, unknown> | null = null
+let dragBehavior: d3.Drag<SVGGElement, any> | null = null
 
 function buildGraph(data: GraphData) {
   if (!svgRef.value) return
@@ -36,13 +38,13 @@ function buildGraph(data: GraphData) {
   const g = svg.append('g')
 
   // 缩放
-  const zoom = d3.zoom<SVGSVGElement, unknown>()
+  zoomBehavior = d3.zoom<SVGSVGElement, unknown>()
     .scaleExtent([0.1, 4])
     .on('zoom', (event) => {
       g.attr('transform', event.transform)
     })
 
-  svg.call(zoom)
+  svg.call(zoomBehavior)
 
   const nodes = data.nodes.map(d => ({ ...d }))
   const edges = data.edges.map(d => ({ ...d }))
@@ -128,7 +130,7 @@ function buildGraph(data: GraphData) {
   })
 
   // 拖拽
-  const drag = d3.drag<SVGGElement, any>()
+  dragBehavior = d3.drag<SVGGElement, any>()
     .on('start', (event, d) => {
       if (!event.active) simulation!.alphaTarget(0.3).restart()
       d.fx = d.x
@@ -144,7 +146,7 @@ function buildGraph(data: GraphData) {
       d.fy = null
     })
 
-  node.call(drag)
+  node.call(dragBehavior)
 
   simulation.on('tick', () => {
     link
@@ -200,7 +202,29 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   window.removeEventListener('resize', handleResize)
-  if (simulation) simulation.stop()
+
+  // 清理 D3 事件监听器
+  if (svgRef.value) {
+    const svg = d3.select(svgRef.value)
+    if (zoomBehavior) {
+      svg.on('.zoom', null)  // 移除所有 zoom 相关事件
+    }
+  }
+
+  // 停止模拟并清理
+  if (simulation) {
+    simulation.stop()
+    simulation.on('tick', null)
+    simulation = null
+  }
+
+  // 清理拖拽行为
+  if (dragBehavior) {
+    dragBehavior.on('start', null).on('drag', null).on('end', null)
+    dragBehavior = null
+  }
+
+  zoomBehavior = null
 })
 </script>
 

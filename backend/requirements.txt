@@ -28,3 +28,6 @@ semanticscholar>=0.8
 # 工具
 pyyaml
 watchfiles
+
+# 限流
+slowapi>=0.1.0

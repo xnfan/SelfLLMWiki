@@ -6,13 +6,20 @@ import logging
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 
 from .config import get_config
 from .routers import wiki, raw, log, ingest, query, deposit, lint, papers, web
 
 logger = logging.getLogger(__name__)
+
+# 创建限流器：每分钟最多 60 个请求
+limiter = Limiter(key_func=get_remote_address, default_limits=["60/minute"])
 
 # WebSocket 连接管理（进度通知）
 ws_connections: set[WebSocket] = set()
@@ -39,6 +46,10 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+
+# 配置限流器
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # 配置 CORS（允许 Vue 开发服务器）
 app.add_middleware(
