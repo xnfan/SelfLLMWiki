@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 # ── arXiv 支持 ──
 
-ARXIV_API_URL = "http://export.arxiv.org/api/query"
+ARXIV_API_URL = "https://export.arxiv.org/api/query"
 
 
 def _parse_arxiv_entry(entry: dict[str, Any]) -> PaperInfo:
