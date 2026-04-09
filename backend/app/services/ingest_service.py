@@ -169,6 +169,16 @@ class IngestService:
             # 抓取 URL 内容
             title, content = convert_url_to_markdown(url)
             if not content:
+                # 检查是否为已知的 JS 渲染站点
+                js_domains = ["zhihu.com", "mp.weixin.qq.com", "juejin.cn"]
+                is_js_site = any(d in url for d in js_domains)
+                if is_js_site:
+                    return IngestResponse(
+                        success=False,
+                        message=f"无法抓取该页面（{url}）：该站点有反爬限制。"
+                        "请在浏览器中打开页面，手动复制全文内容，"
+                        "然后使用「文本摄入」功能粘贴内容。",
+                    )
                 return IngestResponse(
                     success=False,
                     message=f"无法从 URL 提取内容: {url}",

@@ -1,23 +1,45 @@
-"""统一论文搜索服务 — 支持多源自动切换"""
+"""统一论文搜索服务 — 支持多源自动切换（纯 httpx 异步实现）
+
+完全使用 httpx 异步 HTTP 调用，不依赖 semanticscholar 库，
+避免同步阻塞事件循环导致超时。
+"""
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
 
 import httpx
 
-from ..config import get_config
 from ..models.schemas import PaperInfo
 
 logger = logging.getLogger(__name__)
 
-# ── arXiv 支持 ──
+# ── 常量 ──
 
 ARXIV_API_URL = "https://export.arxiv.org/api/query"
+S2_API_BASE = "https://api.semanticscholar.org/graph/v1"
+S2_FIELDS = "paperId,title,authors,year,venue,citationCount,abstract,openAccessPdf,externalIds"
 
+# 所有外部 API 调用共用的超时（秒）
+_API_TIMEOUT = 15.0
+
+
+# ── 通用 httpx 客户端 ──
+
+def _make_client(timeout: float = _API_TIMEOUT) -> httpx.AsyncClient:
+    """创建带合理默认值的异步 HTTP 客户端"""
+    return httpx.AsyncClient(
+        timeout=timeout,
+        follow_redirects=True,
+        headers={"User-Agent": "SelfLLMWiki/0.1 (academic-research)"},
+    )
+
+
+# ── arXiv ──
 
 def _parse_arxiv_entry(entry: dict[str, Any]) -> PaperInfo:
     """解析 arXiv API 返回的 entry"""
@@ -85,8 +107,38 @@ def _parse_arxiv_entry(entry: dict[str, Any]) -> PaperInfo:
     )
 
 
+def _parse_arxiv_xml(xml_text: str) -> list[PaperInfo]:
+    """解析 arXiv Atom XML 为 PaperInfo 列表"""
+    root = ET.fromstring(xml_text)
+    ns = {"atom": "http://www.w3.org/2005/Atom"}
+
+    papers: list[PaperInfo] = []
+    for entry in root.findall("atom:entry", ns):
+        entry_dict: dict[str, Any] = {}
+
+        for field in ("title", "summary", "published", "id"):
+            elem = entry.find(f"atom:{field}", ns)
+            entry_dict[field] = elem.text if elem is not None else ""
+
+        authors = []
+        for author in entry.findall("atom:author", ns):
+            name_elem = author.find("atom:name", ns)
+            if name_elem is not None:
+                authors.append({"name": name_elem.text or ""})
+        entry_dict["author"] = authors
+
+        entry_dict["link"] = [dict(l.attrib) for l in entry.findall("atom:link", ns)]
+        entry_dict["category"] = [dict(c.attrib) for c in entry.findall("atom:category", ns)]
+
+        paper = _parse_arxiv_entry(entry_dict)
+        if paper.title:
+            papers.append(paper)
+
+    return papers
+
+
 async def _search_arxiv(query: str, limit: int = 20) -> list[PaperInfo]:
-    """搜索 arXiv"""
+    """搜索 arXiv（纯异步）"""
     params = {
         "search_query": f"all:{query}",
         "start": 0,
@@ -96,95 +148,28 @@ async def _search_arxiv(query: str, limit: int = 20) -> list[PaperInfo]:
     }
 
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with _make_client(timeout=_API_TIMEOUT) as client:
             resp = await client.get(ARXIV_API_URL, params=params)
             resp.raise_for_status()
-
-            import xml.etree.ElementTree as ET
-            root = ET.fromstring(resp.text)
-            ns = {"atom": "http://www.w3.org/2005/Atom"}
-
-            papers: list[PaperInfo] = []
-            for entry in root.findall("atom:entry", ns):
-                entry_dict: dict[str, Any] = {}
-
-                title_elem = entry.find("atom:title", ns)
-                entry_dict["title"] = title_elem.text if title_elem is not None else ""
-
-                summary_elem = entry.find("atom:summary", ns)
-                entry_dict["summary"] = summary_elem.text if summary_elem is not None else ""
-
-                published_elem = entry.find("atom:published", ns)
-                entry_dict["published"] = published_elem.text if published_elem is not None else ""
-
-                id_elem = entry.find("atom:id", ns)
-                entry_dict["id"] = id_elem.text if id_elem is not None else ""
-
-                authors = []
-                for author in entry.findall("atom:author", ns):
-                    name_elem = author.find("atom:name", ns)
-                    if name_elem is not None:
-                        authors.append({"name": name_elem.text or ""})
-                entry_dict["author"] = authors
-
-                links = []
-                for link in entry.findall("atom:link", ns):
-                    links.append(dict(link.attrib))
-                entry_dict["link"] = links
-
-                categories = []
-                for cat in entry.findall("atom:category", ns):
-                    categories.append(dict(cat.attrib))
-                entry_dict["category"] = categories
-
-                paper = _parse_arxiv_entry(entry_dict)
-                if paper.title:
-                    papers.append(paper)
-
-            logger.info(f"arXiv 搜索 '{query}' 返回 {len(papers)} 篇")
+            papers = _parse_arxiv_xml(resp.text)
+            logger.info("arXiv 搜索 '%s' 返回 %d 篇", query, len(papers))
             return papers
-
     except Exception as e:
-        logger.warning(f"arXiv 搜索失败: {e}")
+        logger.warning("arXiv 搜索失败: %s", e)
         return []
 
 
-# ── Semantic Scholar 支持 ──
+# ── Semantic Scholar（纯 httpx 异步调用）──
 
-try:
-    from semanticscholar import SemanticScholar
-    _HAS_SS = True
-except ImportError:
-    SemanticScholar = None  # type: ignore
-    _HAS_SS = False
-
-_SS_FIELDS = [
-    "paperId", "title", "authors", "year", "venue",
-    "citationCount", "abstract", "openAccessPdf", "externalIds",
-]
-
-
-def _ss_paper_to_info(paper: Any) -> PaperInfo:
-    """转换 Semantic Scholar 论文对象"""
-    if not isinstance(paper, dict):
-        paper = paper.__dict__ if hasattr(paper, "__dict__") else {}
-
+def _s2_paper_to_info(paper: dict[str, Any]) -> PaperInfo:
+    """将 Semantic Scholar REST API 返回的 dict 转为 PaperInfo"""
     authors_raw = paper.get("authors") or []
-    authors = []
-    for a in authors_raw:
-        if isinstance(a, dict):
-            authors.append(a.get("name", ""))
-        elif hasattr(a, "name"):
-            authors.append(a.name)
-        else:
-            authors.append(str(a))
+    authors = [a.get("name", "") for a in authors_raw if isinstance(a, dict)]
 
     open_access_url = ""
     oap = paper.get("openAccessPdf")
     if isinstance(oap, dict):
         open_access_url = oap.get("url", "")
-    elif hasattr(oap, "url"):
-        open_access_url = oap.url or ""
 
     doi = ""
     ext_ids = paper.get("externalIds") or {}
@@ -205,44 +190,27 @@ def _ss_paper_to_info(paper: Any) -> PaperInfo:
     )
 
 
-def _search_semantic_scholar_sync(query: str, limit: int) -> list[PaperInfo]:
-    """同步搜索 Semantic Scholar（在线程池中运行）"""
-    if not _HAS_SS:
-        return []
-
-    try:
-        sch = SemanticScholar()
-        results = sch.search_paper(query, limit=limit, fields=_SS_FIELDS)
-        papers = [_ss_paper_to_info(p) for p in (results or [])]
-        logger.info(f"Semantic Scholar 搜索 '{query}' 返回 {len(papers)} 篇")
-        return papers
-    except Exception as e:
-        logger.warning(f"Semantic Scholar 搜索失败: {e}")
-        return []
-
-
 async def _search_semantic_scholar(query: str, limit: int = 20) -> list[PaperInfo]:
-    """搜索 Semantic Scholar（带超时）"""
-    if not _HAS_SS:
-        return []
-
-    # 在线程池中运行同步调用，避免阻塞事件循环
-    import concurrent.futures
-    loop = asyncio.get_event_loop()
+    """搜索 Semantic Scholar（纯异步 httpx，带严格超时）"""
+    url = f"{S2_API_BASE}/paper/search"
+    params = {"query": query, "limit": min(limit, 100), "fields": S2_FIELDS}
 
     try:
-        # 设置 10 秒超时
-        with concurrent.futures.ThreadPoolExecutor() as pool:
-            result = await asyncio.wait_for(
-                loop.run_in_executor(pool, _search_semantic_scholar_sync, query, limit),
-                timeout=10.0
-            )
-            return result
-    except asyncio.TimeoutError:
-        logger.warning(f"Semantic Scholar 搜索超时 (10s)，回退到 arXiv")
+        async with _make_client(timeout=_API_TIMEOUT) as client:
+            resp = await client.get(url, params=params)
+            if resp.status_code == 429:
+                logger.warning("Semantic Scholar 限流 (429)，跳过")
+                return []
+            resp.raise_for_status()
+            data = resp.json()
+            papers = [_s2_paper_to_info(p) for p in (data.get("data") or [])]
+            logger.info("Semantic Scholar 搜索 '%s' 返回 %d 篇", query, len(papers))
+            return papers
+    except httpx.TimeoutException:
+        logger.warning("Semantic Scholar 搜索超时 (%.0fs)", _API_TIMEOUT)
         return []
     except Exception as e:
-        logger.warning(f"Semantic Scholar 搜索失败: {e}")
+        logger.warning("Semantic Scholar 搜索失败: %s", e)
         return []
 
 
@@ -253,9 +221,9 @@ async def search_papers(
     limit: int = 20,
     sources: list[str] | None = None,
 ) -> list[PaperInfo]:
-    """搜索论文（自动多源）
+    """搜索论文（自动多源，并行请求）
 
-    优先尝试 Semantic Scholar，如果失败或结果不足，使用 arXiv 补充。
+    优先并行请求 Semantic Scholar 和 arXiv，合并结果。
 
     Parameters
     ----------
@@ -265,11 +233,6 @@ async def search_papers(
         最大返回数量
     sources : list[str] | None
         指定搜索源 ["semantic_scholar", "arxiv"]，默认两者都试
-
-    Returns
-    -------
-    list[PaperInfo]
-        合并后的论文列表（去重）
     """
     if sources is None:
         sources = ["semantic_scholar", "arxiv"]
@@ -288,144 +251,116 @@ async def search_papers(
 
     for result in results:
         if isinstance(result, Exception):
+            logger.warning("搜索源异常: %s", result)
             continue
         for paper in result:
-            # 去重：优先使用 DOI，其次 paper_id，最后标题
             key = paper.doi or paper.paper_id or paper.title.lower()
             if key and key not in seen_ids:
                 seen_ids.add(key)
                 all_papers.append(paper)
 
-    # 按年份降序排序（优先展示新论文）
+    # 按年份降序排序
     all_papers.sort(key=lambda p: p.year or 0, reverse=True)
-
-    logger.info(f"搜索 '{query}' 共返回 {len(all_papers)} 篇（去重后）")
+    logger.info("搜索 '%s' 共返回 %d 篇（去重后）", query, len(all_papers))
     return all_papers[:limit]
 
 
 async def get_paper_details(paper_id: str) -> PaperInfo | None:
-    """获取单篇论文详情
-
-    自动识别 paper_id 格式（arxiv:xxx 或 Semantic Scholar ID）
-    """
+    """获取单篇论文详情"""
     if paper_id.startswith("arxiv:"):
         arxiv_id = paper_id.replace("arxiv:", "").strip()
         return await _get_arxiv_paper(arxiv_id)
 
-    if _HAS_SS:
-        try:
-            sch = SemanticScholar()
-            paper = sch.get_paper(paper_id, fields=_SS_FIELDS)
-            return _ss_paper_to_info(paper)
-        except Exception as e:
-            logger.warning(f"获取论文详情失败: {e}")
-
-    return None
+    # Semantic Scholar
+    url = f"{S2_API_BASE}/paper/{paper_id}"
+    params = {"fields": S2_FIELDS}
+    try:
+        async with _make_client() as client:
+            resp = await client.get(url, params=params)
+            if resp.status_code == 404:
+                return None
+            resp.raise_for_status()
+            return _s2_paper_to_info(resp.json())
+    except Exception as e:
+        logger.warning("获取论文详情失败: %s", e)
+        return None
 
 
 async def _get_arxiv_paper(arxiv_id: str) -> PaperInfo | None:
     """获取 arXiv 单篇论文"""
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.get(
-                ARXIV_API_URL,
-                params={"id_list": arxiv_id, "max_results": 1},
-            )
+        async with _make_client() as client:
+            resp = await client.get(ARXIV_API_URL, params={"id_list": arxiv_id, "max_results": 1})
             resp.raise_for_status()
-
-            import xml.etree.ElementTree as ET
-            root = ET.fromstring(resp.text)
-            ns = {"atom": "http://www.w3.org/2005/Atom"}
-
-            entry = root.find("atom:entry", ns)
-            if entry is None:
-                return None
-
-            entry_dict: dict[str, Any] = {
-                "title": getattr(entry.find("atom:title", ns), "text", "") or "",
-                "summary": getattr(entry.find("atom:summary", ns), "text", "") or "",
-                "published": getattr(entry.find("atom:published", ns), "text", "") or "",
-                "id": getattr(entry.find("atom:id", ns), "text", "") or "",
-            }
-
-            authors = []
-            for author in entry.findall("atom:author", ns):
-                name_elem = author.find("atom:name", ns)
-                if name_elem is not None:
-                    authors.append({"name": name_elem.text or ""})
-            entry_dict["author"] = authors
-
-            links = []
-            for link in entry.findall("atom:link", ns):
-                links.append(dict(link.attrib))
-            entry_dict["link"] = links
-
-            categories = []
-            for cat in entry.findall("atom:category", ns):
-                categories.append(dict(cat.attrib))
-            entry_dict["category"] = categories
-
-            return _parse_arxiv_entry(entry_dict)
-
+            papers = _parse_arxiv_xml(resp.text)
+            return papers[0] if papers else None
     except Exception as e:
-        logger.warning(f"获取 arXiv 论文失败: {e}")
+        logger.warning("获取 arXiv 论文失败: %s", e)
         return None
 
 
 async def get_related_papers(paper_id: str, limit: int = 20) -> list[PaperInfo]:
-    """获取相关论文
-
-    仅 Semantic Scholar 支持此功能，arXiv 不支持
-    """
-    if not _HAS_SS or paper_id.startswith("arxiv:"):
+    """获取相关论文（引用的论文）"""
+    if paper_id.startswith("arxiv:"):
         return []
 
+    url = f"{S2_API_BASE}/paper/{paper_id}/references"
+    params = {"fields": S2_FIELDS, "limit": min(limit, 100)}
     try:
-        sch = SemanticScholar()
-        results: list[PaperInfo] = []
-        refs = sch.get_paper_references(paper_id, fields=_SS_FIELDS, limit=limit)
-        for ref in (refs or []):
-            cited = ref.get("citedPaper") if isinstance(ref, dict) else getattr(ref, "citedPaper", None)
-            if cited:
-                results.append(_ss_paper_to_info(cited))
-        return results[:limit]
+        async with _make_client() as client:
+            resp = await client.get(url, params=params)
+            if resp.status_code in (404, 429):
+                return []
+            resp.raise_for_status()
+            data = resp.json().get("data") or []
+            results = []
+            for ref in data:
+                cited = ref.get("citedPaper")
+                if cited and cited.get("title"):
+                    results.append(_s2_paper_to_info(cited))
+            return results[:limit]
     except Exception as e:
-        logger.warning(f"获取相关论文失败: {e}")
+        logger.warning("获取相关论文失败: %s", e)
         return []
 
 
 async def get_paper_recommendations(paper_id: str, limit: int = 20) -> list[PaperInfo]:
-    """获取推荐论文
-
-    仅 Semantic Scholar 支持此功能
-    """
-    if not _HAS_SS or paper_id.startswith("arxiv:"):
+    """获取推荐论文"""
+    if paper_id.startswith("arxiv:"):
         return []
 
+    url = f"{S2_API_BASE}/paper/{paper_id}/citations"
+    params = {"fields": S2_FIELDS, "limit": min(limit, 100)}
     try:
-        sch = SemanticScholar()
-        recs = sch.get_recommended_papers(paper_id, limit=limit, fields=_SS_FIELDS)
-        return [_ss_paper_to_info(p) for p in (recs or [])]
+        async with _make_client() as client:
+            resp = await client.get(url, params=params)
+            if resp.status_code in (404, 429):
+                return []
+            resp.raise_for_status()
+            data = resp.json().get("data") or []
+            results = []
+            for cit in data:
+                citing = cit.get("citingPaper")
+                if citing and citing.get("title"):
+                    results.append(_s2_paper_to_info(citing))
+            return results[:limit]
     except Exception as e:
-        logger.warning(f"获取推荐论文失败: {e}")
+        logger.warning("获取推荐论文失败: %s", e)
         return []
 
 
 async def download_paper_pdf(url: str, save_path: Path) -> bool:
-    """下载论文 PDF
-
-    支持任意 URL（Semantic Scholar 或 arXiv）
-    """
+    """下载论文 PDF"""
     try:
         save_path.parent.mkdir(parents=True, exist_ok=True)
-        async with httpx.AsyncClient(follow_redirects=True, timeout=60.0) as client:
+        async with _make_client(timeout=60.0) as client:
             resp = await client.get(url)
             resp.raise_for_status()
             save_path.write_bytes(resp.content)
-            logger.info(f"PDF 下载成功: {url}")
+            logger.info("PDF 下载成功: %s", url)
             return True
     except Exception as e:
-        logger.exception(f"PDF 下载失败: {url}")
+        logger.warning("PDF 下载失败 %s: %s", url, e)
         return False
 
 
